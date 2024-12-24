@@ -12,12 +12,17 @@ use crate::result::Result;
 use crate::serializable::{numeric, string, SerializableTransactionT};
 use crate::utxo::{UtxoEntryId, UtxoEntryReference};
 use ahash::AHashMap;
+use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::network::NetworkType;
 use kaspa_consensus_core::network::NetworkTypeT;
 use kaspa_consensus_core::subnets::{self, SubnetworkId};
-use kaspa_consensus_core::tx::UtxoEntry;
+use kaspa_consensus_core::tx::{SignableTransaction, UtxoEntry};
 use kaspa_txscript::extract_script_pub_key_address;
 use kaspa_utils::hex::*;
+use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
+use kaspa_consensus_core::hashing::sighash::{calc_ecdsa_signature_hash};
+
+
 
 #[wasm_bindgen(typescript_custom_section)]
 const TS_TRANSACTION: &'static str = r#"
@@ -479,6 +484,53 @@ impl Transaction {
     #[wasm_bindgen(js_name = "serializeToObject")]
     pub fn serialize_to_object(&self) -> Result<SerializableTransactionT> {
         Ok(numeric::SerializableTransaction::from_client_transaction(self)?.serialize_to_object()?.into())
+    }
+    #[wasm_bindgen(js_name = "getScriptHashesECDSA")]
+    pub fn get_script_hashes(&self) -> std::result::Result<JsValue, JsError> {
+        // Convert to consensus Transaction + UTXOs
+        let (cctx_tx, utxos) = self
+            .tx_and_utxos()
+            .map_err(|err| JsError::new(&format!("getScriptHashes: tx_and_utxos failed: {err}")))?;
+
+        if utxos.is_empty() {
+            return Err(JsError::new(
+                "getScriptHashes: no UTXOs found. Possibly missing inputs?"
+            ));
+        }
+
+        // Build a `SignableTransaction` using `.new(...)` with an Arc<Transaction>
+        let arc_tx = Arc::new(cctx_tx);
+        let mut signable_tx = SignableTransaction::new(Arc::try_unwrap(arc_tx).unwrap_or_else(|arc| (*arc).clone()));
+
+        // Populate signable_tx.entries with the UTXOs so each input has Some(UtxoEntry)
+        signable_tx.entries = utxos.into_iter().map(Some).collect();
+
+        // For each input, set sig_op_count = 1 and compute ecdsa sig-hash
+        for input in &mut signable_tx.tx.inputs {
+            input.sig_op_count = 1;
+        }
+
+        let reused_values = SigHashReusedValuesUnsync::new();
+        let mut hashes = Vec::with_capacity(signable_tx.tx.inputs.len());
+
+        for i in 0..signable_tx.tx.inputs.len() {
+            let sig_hash = calc_ecdsa_signature_hash(
+                &signable_tx.as_verifiable(),
+                i,
+                SIG_HASH_ALL,
+                &reused_values,
+            );
+            hashes.push(sig_hash);
+        }
+
+        // Convert Rust Vec<Hash> -> JS Array of hex strings
+        let js_array = Array::new();
+        for h in hashes {
+            js_array.push(&JsValue::from_str(&h.to_string()));
+        }
+
+        // Return the array as a JsValue
+        Ok(js_array.into())
     }
 
     /// Serializes the transaction to a JSON string.
