@@ -110,6 +110,20 @@ impl PendingTransaction {
         Ok(signature.to_hex().into())
     }
 
+    /// Returns the sighash  needed to be signed for the input at the specified index.
+    #[wasm_bindgen(js_name = returnInputSignatureECDSA)]
+    pub fn return_input_signature_ecdsa(
+        &self,
+        input_index: u8,
+        sighash_type: Option<SighashType>,
+    ) -> Result<HexString> {
+        let signature = self.inner.return_input_signature(
+            input_index.into(),
+            sighash_type.unwrap_or(SighashType::All).into(),
+        )?;
+
+        Ok(signature.to_hex().into())
+    }
     /// Sets a signature to the input at the specified index.
     #[wasm_bindgen(js_name = fillInput)]
     pub fn fill_input(&self, input_index: u8, signature_script: BinaryT) -> Result<()> {
